@@ -1,0 +1,13 @@
+The PyChat protocol is the unified way for clients to communicate with PyChat servers.
+
+Commands:
+
+BYE - Disconnects a client from the server.
+
+NICK <nickname> - Changes the client's nickname. This command must be issued when a clienct connects. This and BYE are the only two commands available before authentication.
+
+JOIN <room> - Adds the client to the named room.
+
+PART / EXIT <room> - Removes the client from the specified room.
+
+MSG <room> <message> - Sends <message> to everyone in <room>.
