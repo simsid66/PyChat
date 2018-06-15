@@ -1,253 +1,282 @@
-'''client.py - holds the enums and classes needed for PyChat's user system.'''
 import socket, sys
 
-#Enumeration of the client's current state.
 class ClientState:
 
-    DISCONNECTED = 0
-    SETNICK = 1
-    CHATTING = 2
+    AUTH = 0
+    CHAT = 1
 
-#Client object. Server uses this as an interface to communicate with clients.
+
 class Client( object ):
-    def __init__( self, server, sock:socket.socket, config = None ):
+
+    def __init__( self, sock:socket.socket, server, config = None ):
+
         object.__init__( self )
-        
+
         self.__sock = sock
-        self.sock = self.__sock
+        self.sock = sock
 
         peername = sock.getpeername()
 
+        self.__addr = peername
         self.__host = peername[0]
         self.__port = peername[1]
 
         self.server = server
-        self.config = server.CONFIG or config
+        self.config = server.config or config
         self.nick = 'Guest_%d' % len( self.server.CLIENT_SOCKS )
-        self.state = ClientState.SETNICK
+        self.state = ClientState.AUTH
         self.rooms = []
 
-    #Function to disconnect this client from the server.
     def disconnect( self ):
 
         self.__sock.close()
 
-        sys.stderr.write( '[CLIENT] %s:%d (%s) disconnected.\n' % ( self.__host, self.__port, self.nick ) )
+        sys.stderr.write( '[CLIENT] %s:%d (%s) disconnected.\r\n' % ( self.__host, self.__port, self.nick ) )
         sys.stderr.flush()
 
-        #Leave each room.
         for room in self.rooms:
 
-            room.clients.remove( self )
-            room.servmsg( '%s has disconnected.\r\n' % self.nick )
-            
+            room.delUser( self, True )
 
-        self.server.CLIENTS.remove( self )
-        self.server.CLIENT_SOCKS.remove( self.__sock )
+        self.server.removeClient( self )
 
-        #Put ourselves in a disconnected state for cleanup.
-        self.state = ClientState.DISCONNECTED
+    def joinRoom( self, name:str ):
 
-    #Function to change nickname.
-    def changeNick( self, nick:str ):
+        roomNames = self.server.listRoomNames()
 
-        #If the nick is already taken, do not allow it.
-        if nick in self.server.NICKS:
+        if name.lower() in roomNames:
 
-            self.send( 'MSG [SERVER] Nickname %s has already been taken.\r\n' )
+            room = self.server.getRoom( name )
+
+            room.addUser( self )
 
         else:
-            #Let everyone in the chat rooms know that someone changed their nickname.
-            for room in self.rooms:
-                room.servmsg( '%s is now known as %s.\r\n' % ( self.nick, nick ) )
 
-            self.send( 'MSG [SERVER] You are now known as %s.\r\n' % nick )
+            self.send( 'MSG [SERVER] That room does not exist.\r\n' )
+
+    def leaveRoom( self, name:str ):
+
+        roomNames = self.server.listRoomNames()
+
+        if name.lower() in roomNames:
+
+            room = self.server.getRoom( name )
+
+            room.delUser( self )
+
+        else:
+
+
+            self.send( 'MSG [SERVER] That room does not exist.\r\n' )
+
+    def setNick( self, name:str ):
+
+        if name in self.server.NICKS:
+
+            self.send( 'MSG [SERVER] Nickname %s has already been taken!\r\n' % name )
+
+        else:
+            for room in self.rooms:
+
+                room.servmsg( '%s is now known as %s.' % ( self.nick, name ) )
 
             if self.nick in self.server.NICKS:
-                    self.server.NICKS.remove( self.nick )
-            self.nick = nick
-            self.server.NICKS.append( nick )
 
-            #Since users use the NICK command to join the server, change their user state to chatting if they just connected.
-            if self.state == ClientState.SETNICK:
-                self.state = ClientState.CHATTING
+                self.server.NICKS.remove( self.nick )
+            
+            self.server.NICKS.append( name )
+            self.nick = name
 
-    #Function that allows the client to join a room.
-    def joinRoom( self, room:str ):
+            self.send( 'MSG [SERVER] You are now known as %s.\r\n' % self.nick )
 
-        if self.state == ClientState.CHATTING:
+            if self.state == ClientState.AUTH:
 
-            match = False
+                self.state = ClientState.CHAT
+                
 
-            #Make sure that the room exists.
-            for i in self.server.ROOMS:
-                if i.name.lower() == room.lower():
+    def chat( self, name:str, msg:str ):
 
-                    match = True
-                    
-                    #Only add client to list if they are not already in the channel.
-                    if not self.nick in i.listnames():
-                        i.servmsg( '%s has joined the room.\r\n' % self.nick )
-                        self.send( 'MSG [SERVER] You have joined room %s.\r\n' % room )
+        if self.state == ClientState.CHAT:
 
-                        i.clients.append( self )
-                        self.rooms.append( i )
-                    else:
-                        self.send( 'MSG [SERVER] You are already in room %s.\r\n' % room )
-                    break
+            roomNames = self.server.listRoomNames()
 
-            if not match:
+            if name.lower() in roomNames:
 
-                self.send( 'MSG [SERVER] Room %s does not exist on this server.\r\n' % room )
+                room = self.server.getRoom( name )
+
+                room.usermsg( msg, self )
+
+            else:
+
+                self.send( 'MSG [SERVER] That room does not exist.\r\n' )
 
         else:
-            self.send( 'MSG [SERVER] You must choose a nick using your clients nick command before joining a room.\r\n' )
 
-    #Function that allows the client to leave a room.
-    def leaveRoom( self, room:str ):
+            self.send( 'MSG [SERVER] You must choose a nickname before sending a message.\r\n' )
 
-        match = False
-
-        #Make sure that the room exists.
-        for i in self.server.ROOMS:
-            if i.name.lower() == room.lower():
-
-                match = True
-
-                if self.nick in i.listnames():
-                    i.servmsg( '%s has left the room.\r\n' % self.nick )
-                    self.send( 'MSG [SERVER] You have left the room %s.\r\n' )
-
-                    i.clients.remove( self )
-                    self.rooms.remove( i )
-                else:
-                    self.send( 'MSG [SERVER] You are not in room %s.\r\n' % room )
-
-                break
-
-        if not match:
-
-            self.send( 'MSG [SERVER] Room %s does not exist on this server.\r\n' % room )
-
-    #Function to send a message to a room.
-    def chat( self, room:str, msg:str ):
-
-        if self.state == ClientState.CHATTING:
-
-            match = False
-
-            #Make sure user is in room.
-            for i in self.rooms:
-                if i.name.lower() == room.lower():
-
-                    match = True
-
-                    i.clientmsg( self.nick, msg )
-
-                    break
-
-            if not match:
-
-                self.send( 'MSG [SERVER] You are not in room %s.\r\n' % room )
-
-        else:
-            self.send( 'MSG [SERVER] You must choose a nick using your clients nick command before sending a message.\r\n' )
-        
-    #Function to recieve data from the client.
     def recv( self ):
 
         try:
 
-            data = self.__sock.recv( self.config.BUFSZ or 4096 )
+            data = self.__sock.recv( self.config.BUFSZ )
 
-            #They probably disconnected if no data came through.
             if not data:
 
                 self.disconnect()
-                
+
             else:
 
-                parseData( self, data )
+                Commands.parse( self, data )
 
         except socket.error:
 
             self.disconnect()
 
-    #Sends data from the server to the client.
     def send( self, data:str ):
 
-        send_data = data.encode( self.config.ENCODING or 'utf-8' )
+        send_data = data.encode( self.config.ENCODING )
 
         try:
 
             self.__sock.send( send_data )
 
-        #If we cannot send, the client has disconnected or an error occured.
         except socket.error:
 
             self.disconnect()
 
-#Takes client data and parses it to decide what to do.
-def parseData( client:Client, data:bytes ):
-    server = client.server
 
-    recv_data = data.decode( client.config.ENCODING or 'utf-8' )
-    recv_data = recv_data.rstrip()
+class Commands:
 
-    cmd = recv_data.split( ' ', 1 )[0]
+    cmds = {}
+    params = {}
 
-    #Client sent exit command.
-    if cmd == 'BYE' or cmd == 'EXIT':
+    def command( name:str, params = None ):
+
+        def cmd_deco( func:callable ):
+
+            Commands.cmds[name] = func
+
+            if params is not None:
+
+                Commands.params[name] = '%s %s' % ( name, params )
+
+            else:
+
+                Commands.params[name] = name
+
+            return func
+
+        return cmd_deco
+
+    def parse( user:Client, data:bytes ):
+
+        try:
+            recv_data = data.decode( user.config.ENCODING )
+            recv_data = recv_data.rstrip()
+        except:
+            return
         
-        client.disconnect()
 
-    #Client wants to change or set their nick.
-    elif cmd == 'NICK':
+        cmd = recv_data.split( ' ', 1 )[0].upper()
 
-        if len( recv_data.split() ) < 2:
-            return
+        if cmd in Commands.cmds.keys():
 
-        nick = recv_data.split( ' ' )[1] or client.nick
+            Commands.cmds[cmd]( user, recv_data )
 
-        client.changeNick( nick )
-
-    #Client wants to join a room.
-    elif cmd == 'JOIN':
-
-        if len( recv_data.split() ) < 2:
-            return
-
-        roomName = recv_data.split( ' ' )[1] or None
-
-        if roomName == None:
-            client.send( 'MSG [SERVER] Room name not specified.\r\n' )
         else:
-            client.joinRoom( roomName )
 
-    #Client wants to leave a room.
-    elif cmd == 'LEAVE' or cmd == 'PART':
+            user.send( 'MSG [SERVER] That command is not supported by this server.\r\n' )
 
-        if len( recv_data.split() ) < 2:
-            return
+@Commands.command( 'BYE', '( Disconnects you from the server. )' )
+@Commands.command( 'EXIT', '( Disconnects you from the server. )' ) 
+@Commands.command( 'DISCONNECT', '( Disconnects you from the server. )' )
+def bye( user, data ):
 
-        roomName = recv_data.split( ' ' )[1] or None
+    user.disconnect()
 
-        if roomName == None:
-            client.send( 'MSG [SERVER] Room name not specified.\r\n' )
+
+@Commands.command( 'HELP', '[command] ( Lists available commands or displays parameters for a command. )' )
+@Commands.command( 'PARAMS', '[command] ( Lists available commands or displays parameters for a command. )' )
+def params( user, data ):
+
+    data = data.split( ' ' )
+
+    if len( data ) < 2:
+
+        msg = 'MSG [SERVER] Commands: (use HELP <command> for more info.)\r\n'
+
+        for i in Commands.cmds.keys():
+
+            msg += i + '\r\n'
+
+        user.send( msg )
+
+    else:
+
+        if data[1] in Commands.cmds.keys():
+
+            msg = 'MSG [SERVER] %s\r\n' % Commands.params[data[1]]
+
+            user.send( msg )
+
         else:
-            client.leaveRoom( roomName )
 
-    #Client wants to say something.
-    elif cmd == 'MSG':
+            user.send( 'MSG [SERVER] Command not found.\r\n' )
 
-        if len( recv_data.split() ) < 3:
-            return
+@Commands.command( 'JOIN', '<Room Name> ( Adds you to a chat room on the server. )' )
+def join( user, data ):
 
-        roomName = recv_data.split( ' ' )[1]
-        i = recv_data.index( roomName ) + len( roomName ) + 1
-        msg = recv_data[i:]
+    data = data.split( ' ' )
 
-        if len( msg ) < 1:
-            return
-        else:
-            client.chat( roomName, msg )
+    if len( data ) < 2:
+
+        user.send( 'MSG [SERVER] Missing required parameter <Room Name>.\r\n' )
+
+    else:
+
+        user.joinRoom( data[1] )
+
+@Commands.command( 'PART', '<Room Name> ( Removes you from a chat room on the server. )' )
+@Commands.command( 'LEAVE', '<Room Name> ( Removes you from a chat room on the server. )' )
+def part( user, data ):
+
+    data = data.split( ' ' )
+
+    if len( data ) < 2:
+
+        user.send( 'MSG [SERVER] Missing required parameter <Room Name>.\r\n' )
+
+    else:
+
+        user.leaveRoom( data[1] )
+
+@Commands.command( 'MSG', '<Room Name> <Message> ( Sends a message to a joined chat room non the server. )' )
+def msg( user, data ):
+
+    data = data.split( ' ', 2 )
+
+    if len( data ) < 3 and len( data ) > 1:
+
+        user.send( 'MSG [SERVER] Missing required parameter <Message>.\r\n' )
+
+    elif len( data ) < 2:
+
+        user.send( 'MSG [SERVER] Missing required parameter <Room Name>.\r\n' )
+
+    else:
+
+        user.chat( data[1], data[2] )
+
+@Commands.command( 'NICK', '<Nickname> ( Sets your nickname. )' )
+def nick( user, data ):
+
+    data = data.split( ' ' )
+
+    if len( data ) < 2:
+
+        user.send( 'MSG [SERVER] Missing required parameter <Nickname>.\r\n' )
+
+    else:
+
+        user.setNick( data[1] )
+            
