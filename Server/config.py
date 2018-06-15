@@ -1,7 +1,7 @@
 '''config.py - Create configurations here.'''
 class BaseConfig( object ):
 
-    HOST = '127.0.0.1'
+    HOST = '0.0.0.0'
     PORT = 6900
     ROOMS = [ 'General', 'Help', 'Programming' ]
     ENCODING = 'utf-8'
